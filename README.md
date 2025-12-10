@@ -12,6 +12,21 @@ pip install fitparse
 
 ### Usage
 
+**Auto-convert every new file in `fit/` (default preset: Tacx Neo 2 Smart):**
+```bash
+python fit_autofix.py
+```
+
+**Auto-convert using a different preset (e.g., Garmin Edge 520):**
+```bash
+python fit_autofix.py -p 1
+```
+
+**Convert a specific FIT file and save to `fit_mod/`:**
+```bash
+python fit_autofix.py fit/your_activity.fit -p 2
+```
+
 **Change Zwift to Garmin Edge 520:**
 ```bash
 python fit_device_change.py fit/your_activity.fit 1
@@ -41,6 +56,33 @@ python fit_check.py fit_mod/your_activity.fit
 | 3  | Zwift | 260 | 0 |
 
 ## 🔧 Scripts
+
+### fit_autofix.py
+
+Automation wrapper that scans the `fit/` directory and converts only the files that are missing in `fit_mod/`.
+
+**Syntax:**
+```bash
+python fit_autofix.py [<input_fit>] [-p <preset_id>] [--fit-dir DIR] [--fit-mod-dir DIR]
+```
+
+**Key features:**
+- ✅ Detects new FIT files automatically
+- ✅ Uses preset 2 (Tacx Neo 2 Smart) by default
+- ✅ Allows manual single-file conversion when a path is provided
+- ✅ Prints detailed per-file logs plus a summary of all converted files
+
+**Examples:**
+```bash
+# Convert every new file in fit/ with the default preset
+python fit_autofix.py
+
+# Convert everything using Garmin Edge 520 preset
+python fit_autofix.py -p 1
+
+# Convert a single file and force output directory
+python fit_autofix.py fit/20937000784_ACTIVITY.fit --fit-mod-dir custom_dir
+```
 
 ### fit_device_change.py
 
@@ -154,7 +196,8 @@ garmin-badges/
 │   ├── 20861519609_ACTIVITY.fit
 │   ├── 20869954939_ACTIVITY.fit
 │   └── 20937000784_ACTIVITY.fit
-├── fit_device_change.py          # Main modification script
+├── fit_autofix.py                # Automatic converter script
+├── fit_device_change.py          # Manual modification script
 ├── fit_check.py                  # Verification script
 ├── devices.js                    # Device database
 ├── requirements.txt              # Python dependencies
