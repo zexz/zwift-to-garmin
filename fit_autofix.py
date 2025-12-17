@@ -9,18 +9,35 @@ Automatic FIT file updater.
 - Still supports manual single-file conversion
 """
 
-import argparse
-import sys
-import struct
 import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        from urllib3.exceptions import NotOpenSSLWarning
+    except Exception:  # pragma: no cover - urllib3 missing
+        class NotOpenSSLWarning(UserWarning):
+            """Fallback when urllib3 isn't available."""
+
+warnings.simplefilter("ignore", NotOpenSSLWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"urllib3(\..*)?")
+
+import argparse
+import struct
+import sys
 from pathlib import Path
+
 from fitparse import FitFile
-from urllib3.exceptions import NotOpenSSLWarning
 
 
 FIT_ROOT = Path("fit")
 FIT_MOD_DIR = FIT_ROOT / "mod"
 FIT_ORIGINAL_DIR = FIT_ROOT / "original"
+
+
+def verbose_print(message: str, verbose: bool = False):
+    if verbose:
+        print(message)
 
 
 warnings.simplefilter("ignore", NotOpenSSLWarning)
@@ -76,7 +93,7 @@ def find_field_offset(data, message_name, field_name, start_offset=0):
     return offsets
 
 
-def move_original_file(source_path: Path, destination_dir: Path):
+def move_original_file(source_path: Path, destination_dir: Path, *, verbose: bool = False):
     if not source_path.exists():
         return
     if source_path.parent.resolve() != FIT_ROOT.resolve():
@@ -87,12 +104,12 @@ def move_original_file(source_path: Path, destination_dir: Path):
         if destination.exists():
             destination.unlink()
         source_path.replace(destination)
-        print(f"  ↪ Archived original to {destination}")
+        verbose_print(f"  ↪ Archived original to {destination}", verbose)
     except Exception as exc:  # pylint: disable=broad-except
         print(f"  ⚠ Could not archive {source_path.name}: {exc}")
 
 
-def modify_fit_precise(input_path, preset_id, output_path=None):
+def modify_fit_precise(input_path, preset_id, output_path=None, *, verbose: bool = False):
     """
     Precisely modify only manufacturer and product fields
     """
@@ -108,10 +125,10 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / input_file.name
     
-    print(f"Target device: {preset['name']}")
-    print(f"  Manufacturer ID: {preset['manufacturer_id']}")
-    print(f"  Product ID: {preset['product_id']}")
-    print(f"\nReading: {input_path}")
+    verbose_print(f"Target device: {preset['name']}", verbose)
+    verbose_print(f"  Manufacturer ID: {preset['manufacturer_id']}", verbose)
+    verbose_print(f"  Product ID: {preset['product_id']}", verbose)
+    verbose_print(f"\nReading: {input_path}", verbose)
     
     # Read binary data
     with open(input_path, 'rb') as f:
@@ -123,7 +140,7 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
     data_start = header_size
     data_end = data_start + data_size
     
-    print(f"FIT file: {len(data)} bytes, data section: {data_size} bytes")
+    verbose_print(f"FIT file: {len(data)} bytes, data section: {data_size} bytes", verbose)
     
     # Strategy: Find file_id message (message type 0) and device_info (message type 23)
     # FIT messages have a header byte that indicates message type
@@ -136,7 +153,10 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
     zwift_bytes = struct.pack('<H', 260)
     target_bytes = struct.pack('<H', preset['manufacturer_id'])
     
-    print(f"\nSearching for manufacturer field (Zwift ID 260) in first 1200 bytes...")
+    verbose_print(
+        "\nSearching for manufacturer field (Zwift ID 260) in first 1200 bytes...",
+        verbose,
+    )
     
     # File_id message is typically in first 100 bytes
     # Device_info message is around 800-900 bytes
@@ -149,14 +169,17 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
                 old_val = struct.unpack('<H', data[i:i+2])[0]
                 data[i:i+2] = target_bytes
                 modifications.append(('manufacturer', i, old_val, preset['manufacturer_id']))
-                print(f"  Found manufacturer at offset {i}, changed {old_val} -> {preset['manufacturer_id']}")
+                verbose_print(
+                    f"  Found manufacturer at offset {i}, changed {old_val} -> {preset['manufacturer_id']}",
+                    verbose,
+                )
                 mfg_count += 1
             else:
-                print(f"  Skipping manufacturer at offset {i} (keeping original)")
+                verbose_print(f"  Skipping manufacturer at offset {i} (keeping original)", verbose)
     
     # Also look for product field (0) right after manufacturer
     # Product is uint16, value 0 for Zwift
-    print(f"\nSearching for product field (0) after manufacturer...")
+    verbose_print("\nSearching for product field (0) after manufacturer...", verbose)
     product_target = struct.pack('<H', preset['product_id'])
     
     for mod_type, offset, old_val, new_val in modifications:
@@ -167,10 +190,13 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
                 current_product = struct.unpack('<H', data[product_offset:product_offset+2])[0]
                 if current_product == 0:
                     data[product_offset:product_offset+2] = product_target
-                    print(f"  Found product at offset {product_offset}, changed 0 -> {preset['product_id']}")
+                    verbose_print(
+                        f"  Found product at offset {product_offset}, changed 0 -> {preset['product_id']}",
+                        verbose,
+                    )
                     modifications.append(('product', product_offset, 0, preset['product_id']))
     
-    print(f"\nTotal modifications: {len(modifications)}")
+    verbose_print(f"\nTotal modifications: {len(modifications)}", verbose)
     
     # Recalculate CRC
     def calculate_crc(data, start, end):
@@ -190,40 +216,40 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
     
     new_crc = calculate_crc(data, 0, data_end)
     data[data_end:data_end+2] = struct.pack('<H', new_crc)
-    print(f"New CRC: {new_crc}")
+    verbose_print(f"New CRC: {new_crc}", verbose)
     
     # Write modified file
     with open(output_path, 'wb') as f:
         f.write(data)
     
-    print(f"\n✓ Modified file saved to: {output_path}")
+    verbose_print(f"\n✓ Modified file saved to: {output_path}", verbose)
     
     # Verify
     try:
-        print("\nVerifying...")
+        verbose_print("\nVerifying...", verbose)
         fitfile = FitFile(str(output_path))
         
-        print("File ID:")
+        verbose_print("File ID:", verbose)
         for record in fitfile.get_messages('file_id'):
             for field in record.fields:
                 if field.name in ['manufacturer', 'product', 'garmin_product'] and field.value is not None:
-                    print(f"  {field.name}: {field.value}")
+                    verbose_print(f"  {field.name}: {field.value}", verbose)
             break
         
-        print("\nDevice Info:")
+        verbose_print("\nDevice Info:", verbose)
         for record in fitfile.get_messages('device_info'):
             for field in record.fields:
                 if field.name in ['manufacturer', 'product', 'garmin_product', 'device_index'] and field.value is not None:
-                    print(f"  {field.name}: {field.value}")
+                    verbose_print(f"  {field.name}: {field.value}", verbose)
             break
         
-        print("\n✓ Verification complete!")
-        
+        verbose_print("\n✓ Verification complete!", verbose)
+    
     except Exception as e:
         print(f"\nVerification note: {e}")
         print("File should still be usable.")
     
-    move_original_file(Path(input_path), FIT_ORIGINAL_DIR)
+    move_original_file(Path(input_path), FIT_ORIGINAL_DIR, verbose=verbose)
     return True
 
 
@@ -248,7 +274,7 @@ def find_new_fit_files(input_dir=None, output_dir=None):
     ]
 
 
-def autofix_new_files(preset_id='2', input_dir=None, output_dir=None):
+def autofix_new_files(preset_id='2', input_dir=None, output_dir=None, *, verbose: bool = False):
     """
     Automatically convert every FIT file in input_dir that is missing in output_dir.
     """
@@ -264,43 +290,56 @@ def autofix_new_files(preset_id='2', input_dir=None, output_dir=None):
         print("No new FIT files detected. Everything is up to date ✅")
         return True
 
-    print(f"Found {len(new_files)} new file(s) to convert:")
-    for file in new_files:
-        print(f"  • {file.name}")
+    if verbose:
+        print(f"Found {len(new_files)} new file(s) to convert:")
+        for file in new_files:
+            print(f"  • {file.name}")
+    else:
+        print(f"Found {len(new_files)} new file(s) to convert.")
 
     all_successful = True
     converted_files = []
     for fit_file in new_files:
-        print(f"\nProcessing {fit_file.name} ...")
+        target_path = output_dir / fit_file.name
+        if verbose:
+            print(f"\nProcessing {fit_file.name} ...")
+        else:
+            print(f"{fit_file.name} → {target_path}", end=" ")
         try:
             success = modify_fit_precise(
                 fit_file,
                 preset_id,
-                output_dir / fit_file.name,
+                target_path,
+                verbose=verbose,
             )
         except Exception as exc:
-            print(f"✗ Failed to convert {fit_file.name}: {exc}")
+            if verbose:
+                print(f"✗ Failed to convert {fit_file.name}: {exc}")
+            else:
+                print(f"✗ {exc}")
             success = False
         else:
             if success:
                 converted_files.append(fit_file.name)
+                if verbose:
+                    print(f"✓ Completed {fit_file.name}")
+                else:
+                    print("✓")
         all_successful = all_successful and success
 
-    if len(converted_files) > 1:
-        print("\nSummary:")
-        print(f"  ✓ Converted files: {len(converted_files)}")
-        for fname in converted_files:
+    print(
+        f"\nSummary: {len(converted_files)}/{len(new_files)} file(s) converted successfully."
+    )
+    if len(converted_files) < len(new_files):
+        failed = sorted(set(file.name for file in new_files) - set(converted_files))
+        print("  ⚠ Failed to convert:")
+        for fname in failed:
             print(f"    - {fname}")
-        if len(converted_files) < len(new_files):
-            failed = set(file.name for file in new_files) - set(converted_files)
-            print("  ⚠ Failed to convert:")
-            for fname in sorted(failed):
-                print(f"    - {fname}")
 
     if all_successful:
-        print("\n✓ All new files converted successfully!")
+        print("✓ All conversions succeeded.")
     else:
-        print("\n⚠ Some files failed to convert. See logs above.")
+        print("⚠ Some files failed. See messages above.")
 
     return all_successful
 
@@ -331,6 +370,11 @@ def main():
         default='fit_mod',
         help="Directory where converted FIT files are stored (default: fit_mod).",
     )
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help="Show detailed per-file diagnostics.",
+    )
     args = parser.parse_args()
 
     if args.input_fit:
@@ -344,6 +388,7 @@ def main():
                 input_file,
                 args.preset,
                 Path(args.fit_mod_dir) / input_file.name,
+                verbose=args.verbose,
             )
         except Exception as e:
             print(f"\nError: {e}")
@@ -351,7 +396,12 @@ def main():
             traceback.print_exc()
             success = False
     else:
-        success = autofix_new_files(args.preset, args.fit_dir, args.fit_mod_dir)
+        success = autofix_new_files(
+            args.preset,
+            args.fit_dir,
+            args.fit_mod_dir,
+            verbose=args.verbose,
+        )
 
     sys.exit(0 if success else 1)
 

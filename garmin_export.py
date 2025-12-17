@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """Download recent cycling activities from Garmin Connect."""
 
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        from urllib3.exceptions import NotOpenSSLWarning
+    except Exception:  # pragma: no cover - urllib3 missing
+        class NotOpenSSLWarning(UserWarning):
+            """Fallback warning when urllib3 is unavailable."""
+
+warnings.simplefilter("ignore", NotOpenSSLWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"urllib3(\..*)?")
+
 import argparse
 import getpass
 import os
 import sys
 import zipfile
-import warnings
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -18,10 +30,6 @@ from garminconnect import (
     GarminConnectAuthenticationError,
     GarminConnectConnectionError,
 )
-from urllib3.exceptions import NotOpenSSLWarning
-
-
-warnings.simplefilter("ignore", NotOpenSSLWarning)
 
 CYCLING_TYPE_KEYS = {
     "cycling",

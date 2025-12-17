@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """Upload modified FIT files from fit/mod/ to Garmin Connect."""
 
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        from urllib3.exceptions import NotOpenSSLWarning
+    except Exception:  # pragma: no cover - urllib3 missing
+        class NotOpenSSLWarning(UserWarning):
+            """Fallback warning when urllib3 is unavailable."""
+
+warnings.simplefilter("ignore", NotOpenSSLWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"urllib3(\..*)?")
+
 import argparse
 import getpass
 import os
 import re
 import sys
 import time
-import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-from datetime import datetime
 from dotenv import load_dotenv
 from fitparse import FitFile
 from garminconnect import (
@@ -20,15 +32,11 @@ from garminconnect import (
     GarminConnectConnectionError,
     GarminConnectInvalidFileFormatError,
 )
-from urllib3.exceptions import NotOpenSSLWarning
 
 
 FIT_ROOT = Path("fit")
 FIT_MOD_DIR = FIT_ROOT / "mod"
 FIT_UPLOADED_DIR = FIT_ROOT / "uploaded"
-
-
-warnings.simplefilter("ignore", NotOpenSSLWarning)
 
 
 def resolve_credentials(email_arg: str = None, password_arg: str = None):
@@ -422,13 +430,13 @@ def parse_arguments():
     )
     parser.add_argument(
         "--input-dir",
-        default="fit_mod",
-        help="Directory with modified FIT files (default: fit_mod)",
+        default=FIT_MOD_DIR,
+        help="Directory with modified FIT files (default: fit/mod)",
     )
     parser.add_argument(
         "--uploaded-dir",
-        default="fit_uploaded",
-        help="Directory where successfully uploaded files are moved (default: fit_uploaded)",
+        default=FIT_UPLOADED_DIR,
+        help="Directory where successfully uploaded files are moved (default: fit/uploaded)",
     )
     parser.add_argument(
         "--keep-source",
