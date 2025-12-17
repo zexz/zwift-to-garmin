@@ -2,8 +2,9 @@
 """
 Automatic FIT file updater.
 
-- Watches the `fit` directory for new FIT files
-- Converts anything not yet present in `fit_mod`
+- Watches the `fit/` directory for new FIT files
+- Converts anything not yet present in `fit/mod/`
+- Moves processed originals into `fit/original/`
 - Defaults to Tacx Neo 2 Smart preset (ID 2)
 - Still supports manual single-file conversion
 """
@@ -11,8 +12,18 @@ Automatic FIT file updater.
 import argparse
 import sys
 import struct
+import warnings
 from pathlib import Path
 from fitparse import FitFile
+from urllib3.exceptions import NotOpenSSLWarning
+
+
+FIT_ROOT = Path("fit")
+FIT_MOD_DIR = FIT_ROOT / "mod"
+FIT_ORIGINAL_DIR = FIT_ROOT / "original"
+
+
+warnings.simplefilter("ignore", NotOpenSSLWarning)
 
 
 # Device presets
@@ -65,6 +76,22 @@ def find_field_offset(data, message_name, field_name, start_offset=0):
     return offsets
 
 
+def move_original_file(source_path: Path, destination_dir: Path):
+    if not source_path.exists():
+        return
+    if source_path.parent.resolve() != FIT_ROOT.resolve():
+        return
+    try:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / source_path.name
+        if destination.exists():
+            destination.unlink()
+        source_path.replace(destination)
+        print(f"  ↪ Archived original to {destination}")
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"  ⚠ Could not archive {source_path.name}: {exc}")
+
+
 def modify_fit_precise(input_path, preset_id, output_path=None):
     """
     Precisely modify only manufacturer and product fields
@@ -77,8 +104,8 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
     
     if output_path is None:
         input_file = Path(input_path)
-        output_dir = Path('fit_mod')
-        output_dir.mkdir(exist_ok=True)
+        output_dir = FIT_MOD_DIR
+        output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / input_file.name
     
     print(f"Target device: {preset['name']}")
@@ -196,15 +223,19 @@ def modify_fit_precise(input_path, preset_id, output_path=None):
         print(f"\nVerification note: {e}")
         print("File should still be usable.")
     
+    move_original_file(Path(input_path), FIT_ORIGINAL_DIR)
     return True
 
 
-def find_new_fit_files(input_dir, output_dir):
+def find_new_fit_files(input_dir=None, output_dir=None):
     """
-    Compare fit and fit_mod directories and return FIT files missing in output.
+    Compare exported (`fit/`) and modified (`fit/mod/`) directories to find pending files.
     """
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
+    input_dir = Path(input_dir or FIT_ROOT)
+    output_dir = Path(output_dir or FIT_MOD_DIR)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     candidates = sorted(
         [
             file_path
@@ -212,24 +243,21 @@ def find_new_fit_files(input_dir, output_dir):
             if file_path.is_file() and file_path.suffix.lower() == '.fit'
         ]
     )
-    new_files = [
+    return [
         file_path for file_path in candidates if not (output_dir / file_path.name).exists()
     ]
-    return new_files
 
 
-def autofix_new_files(preset_id='2', input_dir='fit', output_dir='fit_mod'):
+def autofix_new_files(preset_id='2', input_dir=None, output_dir=None):
     """
     Automatically convert every FIT file in input_dir that is missing in output_dir.
     """
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
+    input_dir = Path(input_dir or FIT_ROOT)
+    output_dir = Path(output_dir or FIT_MOD_DIR)
 
-    if not input_dir.exists():
-        print(f"Error: Input directory not found: {input_dir}")
-        return False
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_dir.mkdir(exist_ok=True)
     new_files = find_new_fit_files(input_dir, output_dir)
 
     if not new_files:
