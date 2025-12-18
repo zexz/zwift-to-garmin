@@ -418,7 +418,7 @@ def rename_activity(
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Upload FIT files from fit_mod/ to Garmin Connect.",
+        description="Upload FIT files from fit/mod/ to Garmin Connect.",
     )
     parser.add_argument(
         "--email",

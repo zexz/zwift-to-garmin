@@ -111,7 +111,7 @@ Everything already renamed with `[G]` stays untouched, original downloads are ar
 | --- | --- |
 | `NotOpenSSLWarning` | Harmless warning from urllib3 due to macOS LibreSSL. Suppressed inside scripts. |
 | `Could not determine activity ID` | Enable `--verbose` on import to confirm Garmin has finished processing the upload; the script automatically retries signature matching. |
-| Duplicate uploads | Ensure `fit_mod/` contains only one copy per activity; the importer deletes matching live activities before re-uploading. |
+| Duplicate uploads | Ensure `fit/mod/` contains only one copy per activity; the importer deletes matching live activities before re-uploading. |
 
 Need deeper FIT inspection? Use `fit_check.py <path>` to dump headers and session stats.
 

@@ -113,7 +113,7 @@ if __name__ == "__main__":
         print("Usage: python fit_check.py <fit_file>")
         print("\nExample:")
         print("  python fit_check.py fit/20861519609_ACTIVITY.fit")
-        print("  python fit_check.py fit_mod/20861519609_ACTIVITY.fit")
+        print("  python fit_check.py fit/mod/20861519609_ACTIVITY.fit")
         sys.exit(1)
     
     fit_file = sys.argv[1]

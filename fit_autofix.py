@@ -367,8 +367,8 @@ def main():
     )
     parser.add_argument(
         '--fit-mod-dir',
-        default='fit_mod',
-        help="Directory where converted FIT files are stored (default: fit_mod).",
+        default=FIT_MOD_DIR,
+        help="Directory where converted FIT files are stored (default: fit/mod).",
     )
     parser.add_argument(
         '--verbose',
