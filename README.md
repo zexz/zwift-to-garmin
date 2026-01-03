@@ -103,6 +103,16 @@ Flags:
 
 Everything already renamed with `[G]` stays untouched, original downloads are archived, and uploads are retried until named correctly.
 
+### Run the three steps automatically
+
+If you prefer a single command, use the helper script:
+
+```bash
+./run_all.sh
+```
+
+It sequentially runs `garmin_export.py`, `fit_autofix.py`, and `garmin_import.py` with their default arguments (fails fast on any error). Make sure it is executable: `chmod +x run_all.sh`.
+
 ---
 
 ## Troubleshooting
