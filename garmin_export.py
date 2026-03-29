@@ -30,6 +30,7 @@ from garminconnect import (
     GarminConnectAuthenticationError,
     GarminConnectConnectionError,
 )
+from garmin_rate_limit import call_with_rate_limit_retry
 
 CYCLING_TYPE_KEYS = {
     "cycling",
@@ -42,25 +43,63 @@ CYCLING_TYPE_KEYS = {
 }
 
 
-def resolve_credentials(email_arg: str = None, password_arg: str = None):
+def resolve_tokenstore(tokenstore_arg: str = None) -> str:
+    tokenstore = (
+        tokenstore_arg
+        or os.getenv("GARMIN_TOKENSTORE")
+        or os.getenv("GARMINTOKENS")
+        or "~/.garth"
+    )
+    return str(Path(tokenstore).expanduser())
+
+
+def resolve_credentials(
+    email_arg: str = None,
+    password_arg: str = None,
+    *,
+    allow_missing: bool = False,
+):
     load_dotenv()
 
     email = email_arg or os.getenv("GARMIN_EMAIL")
-    if not email:
+    if not email and not allow_missing:
         print("Error: Garmin email is required (use --email or GARMIN_EMAIL env var)")
         sys.exit(1)
 
     password = password_arg or os.getenv("GARMIN_PASSWORD")
-    if not password:
+    if not password and email and not allow_missing:
         password = getpass.getpass("Garmin password: ")
 
     return email, password
 
 
-def connect(email: str, password: str) -> Garmin:
+def connect(email: str, password: str, tokenstore: str) -> Garmin:
+    tokenstore_path = Path(tokenstore).expanduser()
+
     try:
         client = Garmin(email, password)
-        client.login()
+
+        if tokenstore_path.exists():
+            try:
+                call_with_rate_limit_retry(
+                    lambda: client.login(tokenstore=str(tokenstore_path)),
+                    action_label="resume Garmin Connect session",
+                )
+                return client
+            except Exception as exc:  # pylint: disable=broad-except
+                print(f"Saved Garmin session could not be resumed: {exc}")
+                print("Falling back to full login...")
+
+        if not email:
+            email = input("Garmin email: ").strip()
+        if not password:
+            password = getpass.getpass("Garmin password: ")
+
+        client.username = email
+        client.password = password
+        call_with_rate_limit_retry(client.login, action_label="log in to Garmin Connect")
+        tokenstore_path.mkdir(parents=True, exist_ok=True)
+        client.garth.dump(str(tokenstore_path))
         return client
     except GarminConnectAuthenticationError as exc:
         print(f"Authentication failed: {exc}")
@@ -127,7 +166,12 @@ def download_activities(client: Garmin, activities: Iterable[Dict], output_dir: 
             continue
 
         try:
-            data = client.download_activity(activity_id, Garmin.ActivityDownloadFormat.ORIGINAL)
+            data = call_with_rate_limit_retry(
+                lambda: client.download_activity(
+                    activity_id, Garmin.ActivityDownloadFormat.ORIGINAL
+                ),
+                action_label=f"download activity {activity_id}",
+            )
         except Exception as exc:  # pylint: disable=broad-except
             print(f"Failed to download {activity_id}: {exc}")
             continue
@@ -158,6 +202,10 @@ def parse_arguments():
         help="Garmin Connect password (or set GARMIN_PASSWORD)",
     )
     parser.add_argument(
+        "--tokenstore",
+        help="Directory where Garmin session tokens are stored (default: ~/.garth)",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=3,
@@ -178,16 +226,25 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    tokenstore = resolve_tokenstore(args.tokenstore)
+    tokenstore_exists = Path(tokenstore).exists()
 
-    email, password = resolve_credentials(args.email, args.password)
+    email, password = resolve_credentials(
+        args.email,
+        args.password,
+        allow_missing=tokenstore_exists,
+    )
 
     if args.include_type:
         CYCLING_TYPE_KEYS.update(t.lower() for t in args.include_type)
 
-    client = connect(email, password)
+    client = connect(email, password, tokenstore)
 
     try:
-        activities = client.get_activities(0, args.limit)
+        activities = call_with_rate_limit_retry(
+            lambda: client.get_activities(0, args.limit),
+            action_label="fetch recent activities",
+        )
     except Exception as exc:  # pylint: disable=broad-except
         print(f"Could not fetch activities: {exc}")
         sys.exit(1)

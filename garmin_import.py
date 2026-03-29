@@ -32,6 +32,7 @@ from garminconnect import (
     GarminConnectConnectionError,
     GarminConnectInvalidFileFormatError,
 )
+from garmin_rate_limit import call_with_rate_limit_retry
 
 
 FIT_ROOT = Path("fit")
@@ -39,25 +40,63 @@ FIT_MOD_DIR = FIT_ROOT / "mod"
 FIT_UPLOADED_DIR = FIT_ROOT / "uploaded"
 
 
-def resolve_credentials(email_arg: str = None, password_arg: str = None):
+def resolve_tokenstore(tokenstore_arg: str = None) -> str:
+    tokenstore = (
+        tokenstore_arg
+        or os.getenv("GARMIN_TOKENSTORE")
+        or os.getenv("GARMINTOKENS")
+        or "~/.garth"
+    )
+    return str(Path(tokenstore).expanduser())
+
+
+def resolve_credentials(
+    email_arg: str = None,
+    password_arg: str = None,
+    *,
+    allow_missing: bool = False,
+):
     load_dotenv()
 
     email = email_arg or os.getenv("GARMIN_EMAIL")
-    if not email:
+    if not email and not allow_missing:
         print("Error: Garmin email is required (use --email or GARMIN_EMAIL env var)")
         sys.exit(1)
 
     password = password_arg or os.getenv("GARMIN_PASSWORD")
-    if not password:
+    if not password and email and not allow_missing:
         password = getpass.getpass("Garmin password: ")
 
     return email, password
 
 
-def connect(email: str, password: str) -> Garmin:
+def connect(email: str, password: str, tokenstore: str) -> Garmin:
+    tokenstore_path = Path(tokenstore).expanduser()
+
     try:
         client = Garmin(email, password)
-        client.login()
+
+        if tokenstore_path.exists():
+            try:
+                call_with_rate_limit_retry(
+                    lambda: client.login(tokenstore=str(tokenstore_path)),
+                    action_label="resume Garmin Connect session",
+                )
+                return client
+            except Exception as exc:  # pylint: disable=broad-except
+                print(f"Saved Garmin session could not be resumed: {exc}")
+                print("Falling back to full login...")
+
+        if not email:
+            email = input("Garmin email: ").strip()
+        if not password:
+            password = getpass.getpass("Garmin password: ")
+
+        client.username = email
+        client.password = password
+        call_with_rate_limit_retry(client.login, action_label="log in to Garmin Connect")
+        tokenstore_path.mkdir(parents=True, exist_ok=True)
+        client.garth.dump(str(tokenstore_path))
         return client
     except GarminConnectAuthenticationError as exc:
         print(f"Authentication failed: {exc}")
@@ -98,7 +137,10 @@ def upload_files(
                 client, signature, verbose=verbose
             )
         try:
-            response = client.upload_activity(str(fit_path))
+            response = call_with_rate_limit_retry(
+                lambda: client.upload_activity(str(fit_path)),
+                action_label=f"upload {fit_path.name}",
+            )
         except GarminConnectInvalidFileFormatError as exc:
             print(f"✗ invalid file: {exc}")
             continue
@@ -259,7 +301,10 @@ def find_activity_by_signature(
 
     start_time, elapsed, distance = signature
     try:
-        activities = client.get_activities(0, 20)
+        activities = call_with_rate_limit_retry(
+            lambda: client.get_activities(0, 20),
+            action_label="fetch recent activities",
+        )
     except Exception as exc:  # pylint: disable=broad-except
         print(f"\n  ⚠ Could not fetch recent activities for rename: {exc}")
         return None
@@ -316,11 +361,14 @@ def delete_existing_activity_if_present(
     if verbose:
         print(f"\n  ℹ Deleting existing activity {existing_id} before re-upload")
     try:
-        client.garth.request(
-            "DELETE",
-            "connectapi",
-            path,
-            api=True,
+        call_with_rate_limit_retry(
+            lambda: client.garth.request(
+                "DELETE",
+                "connectapi",
+                path,
+                api=True,
+            ),
+            action_label=f"delete activity {existing_id}",
         )
         print(f"\n  ℹ Removed prior activity {existing_id} to keep upload atomic.")
     except Exception as exc:  # pylint: disable=broad-except
@@ -379,7 +427,10 @@ def rename_activity(
     path = f"{client.garmin_connect_activity}/{activity_id}"
 
     try:
-        activity = client.connectapi(path)
+        activity = call_with_rate_limit_retry(
+            lambda: client.connectapi(path),
+            action_label=f"fetch activity {activity_id}",
+        )
     except Exception as exc:  # pylint: disable=broad-except
         print(f"\n  ⚠ Failed to fetch activity {activity_id}: {exc}")
         return False
@@ -401,12 +452,15 @@ def rename_activity(
         print(f"\n  ℹ Renaming activity {activity_id} to \"{name}\"")
 
     try:
-        client.garth.request(
-            "PUT",
-            "connectapi",
-            path,
-            api=True,
-            json=payload,
+        call_with_rate_limit_retry(
+            lambda: client.garth.request(
+                "PUT",
+                "connectapi",
+                path,
+                api=True,
+                json=payload,
+            ),
+            action_label=f"rename activity {activity_id}",
         )
         if verbose:
             print(f"  ✓ Rename request accepted for {activity_id}")
@@ -427,6 +481,10 @@ def parse_arguments():
     parser.add_argument(
         "--password",
         help="Garmin Connect password (or set GARMIN_PASSWORD)",
+    )
+    parser.add_argument(
+        "--tokenstore",
+        help="Directory where Garmin session tokens are stored (default: ~/.garth)",
     )
     parser.add_argument(
         "--input-dir",
@@ -465,8 +523,14 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
-    email, password = resolve_credentials(args.email, args.password)
-    client = connect(email, password)
+    tokenstore = resolve_tokenstore(args.tokenstore)
+    tokenstore_exists = Path(tokenstore).exists()
+    email, password = resolve_credentials(
+        args.email,
+        args.password,
+        allow_missing=tokenstore_exists,
+    )
+    client = connect(email, password, tokenstore)
 
     input_dir = Path(args.input_dir)
     uploaded_dir = Path(args.uploaded_dir)
