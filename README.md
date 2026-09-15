@@ -17,10 +17,14 @@ fit/
 ## Prerequisites
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 export GARMIN_EMAIL="you@example.com"
 export GARMIN_PASSWORD="your_password"
 ```
+
+`run_all.sh` uses `.venv/bin/python` when available, otherwise `python3` from
+your shell. Install dependencies into the same environment used by the launcher.
 
 Optional: save credentials in a `.env` file (dotenv is loaded automatically).
 

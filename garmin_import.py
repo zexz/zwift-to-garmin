@@ -96,7 +96,8 @@ def connect(email: str, password: str, tokenstore: str) -> Garmin:
         client.password = password
         call_with_rate_limit_retry(client.login, action_label="log in to Garmin Connect")
         tokenstore_path.mkdir(parents=True, exist_ok=True)
-        client.garth.dump(str(tokenstore_path))
+        client.client.dump(str(tokenstore_path))
+        print("[FIX] Saved Garmin importer session using the current authentication client.")
         return client
     except GarminConnectAuthenticationError as exc:
         print(f"Authentication failed: {exc}")
@@ -357,20 +358,14 @@ def delete_existing_activity_if_present(
     if not existing_id:
         return
 
-    path = f"{client.garmin_connect_activity}/{existing_id}"
     if verbose:
         print(f"\n  ℹ Deleting existing activity {existing_id} before re-upload")
     try:
         call_with_rate_limit_retry(
-            lambda: client.garth.request(
-                "DELETE",
-                "connectapi",
-                path,
-                api=True,
-            ),
+            lambda: client.delete_activity(str(existing_id)),
             action_label=f"delete activity {existing_id}",
         )
-        print(f"\n  ℹ Removed prior activity {existing_id} to keep upload atomic.")
+        print(f"\n  [FIX] Removed prior activity {existing_id} before re-upload.")
     except Exception as exc:  # pylint: disable=broad-except
         print(f"\n  ⚠ Failed to delete existing activity {existing_id}: {exc}")
 
@@ -446,20 +441,12 @@ def rename_activity(
             print(f"\n  ℹ Activity {activity_id} already named \"{name}\".")
         return True
 
-    payload = {"activityName": name}
-
     if verbose:
         print(f"\n  ℹ Renaming activity {activity_id} to \"{name}\"")
 
     try:
         call_with_rate_limit_retry(
-            lambda: client.garth.request(
-                "PUT",
-                "connectapi",
-                path,
-                api=True,
-                json=payload,
-            ),
+            lambda: client.set_activity_name(str(activity_id), name),
             action_label=f"rename activity {activity_id}",
         )
         if verbose:
