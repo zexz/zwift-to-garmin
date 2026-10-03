@@ -18,6 +18,7 @@ import argparse
 import getpass
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -38,6 +39,7 @@ from garmin_rate_limit import call_with_rate_limit_retry
 FIT_ROOT = Path("fit")
 FIT_MOD_DIR = FIT_ROOT / "mod"
 FIT_UPLOADED_DIR = FIT_ROOT / "uploaded"
+FIT_FAILED_DIR = FIT_ROOT / "failed"
 
 
 def resolve_tokenstore(tokenstore_arg: str = None) -> str:
@@ -107,21 +109,63 @@ def connect(email: str, password: str, tokenstore: str) -> Garmin:
         sys.exit(1)
 
 
-def find_pending_files(input_dir: Path, uploaded_dir: Path) -> List[Path]:
+def find_pending_files(
+    input_dir: Path,
+    uploaded_dir: Path,
+    failed_dir: Optional[Path] = None,
+) -> List[Path]:
     input_dir.mkdir(parents=True, exist_ok=True)
     uploaded_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded_names = {path.name for path in uploaded_dir.glob("*.fit")}
+    failed_names = set()
+    if failed_dir:
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        failed_names = {path.name for path in failed_dir.glob("*.fit")}
     candidates = sorted(
-        path for path in input_dir.glob("*.fit") if path.name not in uploaded_names
+        path
+        for path in input_dir.glob("*.fit")
+        if path.name not in uploaded_names and path.name not in failed_names
     )
     return candidates
+
+
+def is_permanent_upload_rejection(error: Exception) -> bool:
+    """Return whether Garmin rejected the FIT file rather than the request itself."""
+    if isinstance(error, GarminConnectInvalidFileFormatError):
+        return True
+
+    error_message = str(error)
+    return bool(
+        re.search(r"(?:API Error|HTTP)\s*400\b", error_message, flags=re.IGNORECASE)
+    )
+
+
+def mark_failed_upload(
+    fit_path: Path,
+    failed_dir: Path,
+    error: Exception,
+    *,
+    keep_source: bool,
+) -> Path:
+    """Quarantine a rejected FIT file and retain Garmin's error for investigation."""
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    destination = failed_dir / fit_path.name
+    if keep_source:
+        shutil.copy2(fit_path, destination)
+    else:
+        fit_path.replace(destination)
+
+    error_path = failed_dir / f"{fit_path.name}.error.txt"
+    error_path.write_text(f"Garmin upload rejected this file:\n{error}\n", encoding="utf-8")
+    return destination
 
 
 def upload_files(
     client: Garmin,
     files: Iterable[Path],
     uploaded_dir: Path,
+    failed_dir: Path,
     keep_source: bool = False,
     rename_attempts: int = 3,
     rename_delay: float = 3.0,
@@ -129,23 +173,32 @@ def upload_files(
 ) -> int:
     uploaded_count = 0
     uploaded_dir.mkdir(parents=True, exist_ok=True)
+    failed_dir.mkdir(parents=True, exist_ok=True)
 
     for fit_path in files:
         print(f"Uploading {fit_path.name} ...", end=" ")
         signature = extract_activity_signature(fit_path)
+        excluded_activity_ids = set()
         if signature:
-            delete_existing_activity_if_present(
+            deleted_activity_id = delete_existing_activity_if_present(
                 client, signature, verbose=verbose
             )
+            if deleted_activity_id:
+                excluded_activity_ids.add(deleted_activity_id)
         try:
             response = call_with_rate_limit_retry(
                 lambda: client.upload_activity(str(fit_path)),
                 action_label=f"upload {fit_path.name}",
             )
         except GarminConnectInvalidFileFormatError as exc:
-            print(f"✗ invalid file: {exc}")
+            mark_failed_upload(fit_path, failed_dir, exc, keep_source=keep_source)
+            print(f"✗ rejected; marked in {failed_dir}: {exc}")
             continue
         except Exception as exc:  # pylint: disable=broad-except
+            if is_permanent_upload_rejection(exc):
+                mark_failed_upload(fit_path, failed_dir, exc, keep_source=keep_source)
+                print(f"✗ rejected; marked in {failed_dir}: {exc}")
+                continue
             print(f"✗ failed: {exc}")
             continue
 
@@ -159,7 +212,12 @@ def upload_files(
         for attempt in range(1, rename_attempts + 1):
             current_id = activity_id
             if not current_id:
-                current_id = find_activity_by_signature(client, signature, verbose=verbose)
+                current_id = find_activity_by_signature(
+                    client,
+                    signature,
+                    verbose=verbose,
+                    excluded_activity_ids=excluded_activity_ids,
+                )
             if not current_id:
                 if attempt == 1:
                     print(
@@ -230,10 +288,13 @@ def format_activity_title(base_title: str) -> str:
 
 
 def extract_activity_id(response) -> Optional[int]:
-    try:
-        payload = response.json()
-    except Exception:  # pylint: disable=broad-except
-        return None
+    if isinstance(response, dict):
+        payload = response
+    else:
+        try:
+            payload = response.json()
+        except Exception:  # pylint: disable=broad-except
+            return None
 
     detail = payload.get("detailedImportResult") or payload
     successes = detail.get("successes") or []
@@ -296,6 +357,7 @@ def find_activity_by_signature(
     *,
     verbose: bool = False,
     purpose: str = "rename",
+    excluded_activity_ids: Optional[set[int]] = None,
 ) -> Optional[int]:
     if not signature:
         return None
@@ -318,6 +380,14 @@ def find_activity_by_signature(
     for activity in activities:
         activity_id = activity.get("activityId")
         if not activity_id:
+            continue
+        try:
+            activity_id = int(activity_id)
+        except (TypeError, ValueError):
+            continue
+        if activity_id in (excluded_activity_ids or set()):
+            if verbose:
+                print(f"\n  ℹ Skipping deleted activity {activity_id} during {purpose} lookup.")
             continue
 
         if start_time:
@@ -348,15 +418,15 @@ def delete_existing_activity_if_present(
     signature: Optional[Tuple[Optional[datetime], Optional[float], Optional[float]]],
     *,
     verbose: bool = False,
-) -> None:
+) -> Optional[int]:
     if not signature:
-        return
+        return None
 
     existing_id = find_activity_by_signature(
         client, signature, verbose=verbose, purpose="delete"
     )
     if not existing_id:
-        return
+        return None
 
     if verbose:
         print(f"\n  ℹ Deleting existing activity {existing_id} before re-upload")
@@ -366,8 +436,10 @@ def delete_existing_activity_if_present(
             action_label=f"delete activity {existing_id}",
         )
         print(f"\n  [FIX] Removed prior activity {existing_id} before re-upload.")
+        return existing_id
     except Exception as exc:  # pylint: disable=broad-except
         print(f"\n  ⚠ Failed to delete existing activity {existing_id}: {exc}")
+        return None
 
 
 def compare_times(source_time: datetime, activity: dict) -> bool:
@@ -484,6 +556,11 @@ def parse_arguments():
         help="Directory where successfully uploaded files are moved (default: fit/uploaded)",
     )
     parser.add_argument(
+        "--failed-dir",
+        default=FIT_FAILED_DIR,
+        help="Directory where Garmin-rejected files are moved (default: fit/failed)",
+    )
+    parser.add_argument(
         "--keep-source",
         action="store_true",
         help="Keep a copy in input-dir instead of moving to uploaded-dir",
@@ -521,7 +598,8 @@ def main():
 
     input_dir = Path(args.input_dir)
     uploaded_dir = Path(args.uploaded_dir)
-    files = find_pending_files(input_dir, uploaded_dir)
+    failed_dir = Path(args.failed_dir)
+    files = find_pending_files(input_dir, uploaded_dir, failed_dir)
 
     if not files:
         print("No pending FIT files to upload. ✅")
@@ -535,6 +613,7 @@ def main():
         client,
         files,
         uploaded_dir,
+        failed_dir,
         keep_source=args.keep_source,
         rename_attempts=max(1, args.rename_attempts),
         rename_delay=max(0.5, args.rename_delay),
