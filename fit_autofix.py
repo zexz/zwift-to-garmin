@@ -23,6 +23,7 @@ warnings.simplefilter("ignore", NotOpenSSLWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module=r"urllib3(\..*)?")
 
 import argparse
+import shutil
 import struct
 import sys
 from pathlib import Path
@@ -109,6 +110,32 @@ def move_original_file(source_path: Path, destination_dir: Path, *, verbose: boo
         print(f"  ⚠ Could not archive {source_path.name}: {exc}")
 
 
+def device_profiles(fitfile):
+    """Return decoded manufacturer/product pairs from FIT device metadata."""
+    profiles = []
+    for message_name in ("file_id", "device_info"):
+        for record in fitfile.get_messages(message_name):
+            fields = {
+                field.name: getattr(field, "raw_value", field.value)
+                for field in record.fields
+                if field.value is not None
+            }
+            manufacturer = fields.get("manufacturer")
+            product = fields.get("product", fields.get("garmin_product"))
+            if manufacturer is not None and product is not None:
+                profiles.append((manufacturer, product))
+    return profiles
+
+
+def already_has_target_device(input_path, preset):
+    """Return whether every decoded device profile already matches ``preset``."""
+    profiles = device_profiles(FitFile(str(input_path)))
+    return bool(profiles) and all(
+        manufacturer == preset["manufacturer_id"] and product == preset["product_id"]
+        for manufacturer, product in profiles
+    )
+
+
 def modify_fit_precise(input_path, preset_id, output_path=None, *, verbose: bool = False):
     """
     Precisely modify only manufacturer and product fields
@@ -124,6 +151,17 @@ def modify_fit_precise(input_path, preset_id, output_path=None, *, verbose: bool
         output_dir = FIT_MOD_DIR
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / input_file.name
+
+    # A byte-pattern search can match FIT definition data rather than a device
+    # field.  Never rewrite a FIT that already identifies itself as the target.
+    if already_has_target_device(input_path, preset):
+        shutil.copy2(input_path, output_path)
+        print(
+            f"[FIX] {Path(input_path).name} already has target device metadata; "
+            "copied without modifying FIT bytes."
+        )
+        move_original_file(Path(input_path), FIT_ORIGINAL_DIR, verbose=verbose)
+        return True
     
     verbose_print(f"Target device: {preset['name']}", verbose)
     verbose_print(f"  Manufacturer ID: {preset['manufacturer_id']}", verbose)

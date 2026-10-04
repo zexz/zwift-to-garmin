@@ -13,6 +13,7 @@ from garmin_import import (
     find_pending_files,
     is_permanent_upload_rejection,
     mark_failed_upload,
+    log_upload_response,
     delete_existing_activity_if_present,
     rename_activity,
 )
@@ -47,6 +48,23 @@ class GarminApiTests(unittest.TestCase):
 
         self.assertEqual(activity_id, 456)
 
+    def test_does_not_match_another_ride_by_distance_when_start_time_exists(self):
+        self.client.get_activities = Mock(return_value=[
+            {
+                'activityId': 123,
+                'startTimeGMT': '2026-10-03 14:24:15',
+                'distance': 1000,
+                'duration': 60,
+            },
+        ])
+
+        activity_id = find_activity_by_signature(
+            self.client,
+            (datetime(2026, 10, 4, 14, 24, 15), 60, 1000),
+        )
+
+        self.assertIsNone(activity_id)
+
     def test_extracts_activity_id_from_garmin_client_dictionary_response(self):
         response = {
             'detailedImportResult': {
@@ -55,6 +73,10 @@ class GarminApiTests(unittest.TestCase):
         }
 
         self.assertEqual(extract_activity_id(response), 456)
+
+    def test_logs_garmin_client_dictionary_response(self):
+        response = {'detailedImportResult': {'successes': [{'activityId': 456}]}}
+        log_upload_response(response)
 
     def test_renames_activity(self):
         self.client.connectapi = Mock(return_value={'activityName': 'old'})

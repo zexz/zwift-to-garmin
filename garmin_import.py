@@ -311,12 +311,15 @@ def extract_activity_id(response) -> Optional[int]:
 
 def log_upload_response(response):
     print("\n  ℹ Upload response payload:")
-    try:
-        payload = response.json()
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"    (failed to decode JSON: {exc})")
-        print(f"    Raw text: {response.text[:500]}")
-        return
+    if isinstance(response, dict):
+        payload = response
+    else:
+        try:
+            payload = response.json()
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"    (failed to decode JSON: {exc})")
+            print(f"    Raw text: {getattr(response, 'text', str(response))[:500]}")
+            return
 
     import json  # local import to avoid top-level dependency
 
@@ -400,7 +403,10 @@ def find_activity_by_signature(
             elapsed, activity.get("duration"), tolerance=30
         )
 
-        if start_match or (distance_match and duration_match):
+        # When a FIT supplies a start time, it is the stable identity for an
+        # activity.  Distance and duration alone can match an unrelated ride.
+        signature_match = start_match if start_time else (distance_match and duration_match)
+        if signature_match:
             print(
                 f"\n  ℹ Matched activity for {purpose} by "
                 f"{'start time' if start_match else 'distance/duration'}: {activity_id}"
